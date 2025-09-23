@@ -1,0 +1,367 @@
+# Reproduction Parameters Documentation
+## Complete Parameter Specification for Scientific Reproducibility
+
+### Table of Contents
+1. [Data Preprocessing Parameters](#1-data-preprocessing-parameters)
+2. [Model Architecture Parameters](#2-model-architecture-parameters)
+3. [Training Hyperparameters](#3-training-hyperparameters)
+4. [Augmentation Parameters](#4-augmentation-parameters)
+5. [Evaluation Parameters](#5-evaluation-parameters)
+6. [System Configuration](#6-system-configuration)
+7. [Framework Versions](#7-framework-versions)
+
+---
+
+## 1. Data Preprocessing Parameters
+
+### 1.1 Image Loading and Formatting
+| Parameter | Value | Framework | Function | Rationale |
+|-----------|-------|-----------|----------|-----------|
+| Image Format | NIfTI (.nii.gz) | MONAI | LoadImaged | Medical imaging standard |
+| Loader Backend | ITK | MONAI | - | Robust orientation handling |
+| Image Only | True | MONAI | LoadImaged | Exclude metadata |
+| Channel Position | First | MONAI | EnsureChannelFirstd | PyTorch convention |
+| Data Type | float32 | NumPy/PyTorch | - | Precision vs memory balance |
+
+### 1.2 Spatial Resampling
+| Parameter | Value | Method | Implementation |
+|-----------|-------|--------|----------------|
+| Target Spacing (x,y,z) | [1.0, 1.0, 2.0] mm | Trilinear/Nearest | MONAI Spacingd |
+| Image Interpolation | Bilinear (2D planes) | B-spline order 1 | mode="bilinear" |
+| Mask Interpolation | Nearest Neighbor | Order 0 | mode="nearest" |
+| Padding Mode | Border | Constant extension | Default MONAI |
+| Anti-aliasing | Enabled | Gaussian smoothing | Built-in MONAI |
+
+### 1.3 Volume Standardization
+| Parameter | Value | Justification |
+|-----------|-------|---------------|
+| Target Size (x,y,z) | [128, 128, 80] voxels | GPU memory optimization |
+| Resize Mode (Images) | Trilinear | Smooth interpolation |
+| Resize Mode (Masks) | Nearest | Preserve binary labels |
+| Align Corners | False | PyTorch default |
+| Preserve Range | True | Maintain intensity values |
+
+### 1.4 Intensity Normalization Pipeline
+| Step | Method | Parameters | Formula |
+|------|--------|------------|---------|
+| 1. Range Scaling | MinMax | [0, 1] | (x - min) / (max - min) |
+| 2. Masking | Binary Mask | tumor_mask | x * mask |
+| 3. Z-score | Non-zero mean/std | nonzero=True | (x - μ_nonzero) / σ_nonzero |
+
+### 1.5 Multi-Sequence Fusion
+| Parameter | Value | Details |
+|-----------|-------|---------|
+| Sequence Order | [EN, T1, T2] | Channel concatenation |
+| Channel Dimension | 1 | After batch dimension |
+| Fusion Method | Early Fusion | Pre-network concatenation |
+| Alignment | Co-registered | Assumed pre-aligned |
+
+---
+
+## 2. Model Architecture Parameters
+
+### 2.1 DenseNet-121 Configuration
+| Component | Value | Details |
+|-----------|-------|---------|
+| Base Architecture | DenseNet-121 | 3D variant |
+| Spatial Dimensions | 3 | Volumetric convolutions |
+| Input Channels | 3 | Concatenated sequences |
+| Output Classes | 2 | Binary classification |
+| Growth Rate | 32 | Feature maps per layer |
+| Block Configuration | [6, 12, 24, 16] | Layers per dense block |
+| Compression Factor | 0.5 | Transition layer reduction |
+| Initial Features | 64 | First convolution output |
+| Dropout Rate | 0.0 | No dropout (small dataset) |
+
+### 2.2 Network Layer Details
+| Layer Type | Kernel Size | Stride | Padding | Activation |
+|------------|------------|--------|---------|------------|
+| Initial Conv3D | 7×7×7 | 2×2×2 | 3×3×3 | ReLU |
+| Initial Pool3D | 3×3×3 | 2×2×2 | 1×1×1 | - |
+| Dense Conv3D | 3×3×3 | 1×1×1 | 1×1×1 | ReLU |
+| Transition Conv3D | 1×1×1 | 1×1×1 | 0×0×0 | ReLU |
+| Transition Pool3D | 2×2×2 | 2×2×2 | 0×0×0 | - |
+| Global AvgPool3D | Adaptive | - | - | - |
+
+### 2.3 Batch Normalization
+| Parameter | Value |
+|-----------|-------|
+| Epsilon | 1e-5 |
+| Momentum | 0.1 |
+| Affine | True |
+| Track Running Stats | True |
+
+---
+
+## 3. Training Hyperparameters
+
+### 3.1 Optimization Configuration
+| Parameter | Value | Justification |
+|-----------|-------|---------------|
+| Optimizer | AdamW | Weight decay decoupling |
+| Base Learning Rate | 1e-4 | Empirically optimal |
+| Beta1 | 0.9 | Default momentum |
+| Beta2 | 0.999 | Default RMSprop |
+| Epsilon | 1e-8 | Numerical stability |
+| Weight Decay | 1e-5 | L2 regularization |
+| AMSGrad | False | Standard Adam |
+
+### 3.2 Learning Rate Schedule
+| Parameter | Value | Formula/Details |
+|-----------|-------|-----------------|
+| Scheduler | CosineAnnealingWarmRestarts | Cyclical learning |
+| T_0 | 10 epochs | Initial period |
+| T_mult | 2 | Period doubling |
+| eta_min | 1e-6 | Minimum LR |
+| Last Epoch | -1 | Start from beginning |
+| Verbose | False | No print statements |
+
+### 3.3 Training Configuration
+| Parameter | Value | Details |
+|-----------|-------|---------|
+| Total Epochs | 30 | Fixed training |
+| Batch Size | 32 | Total across GPUs |
+| Effective Batch/GPU | 16 | With 2 GPUs |
+| Gradient Accumulation | 1 | No accumulation |
+| Gradient Clipping | 1.0 | Max norm clipping |
+| Early Stopping | Disabled | Fixed epochs |
+
+### 3.4 Loss Function
+| Parameter | Value | Implementation |
+|-----------|-------|----------------|
+| Loss Type | Cross Entropy | nn.CrossEntropyLoss |
+| Class Weights | Inverse Frequency | n_samples / (n_classes × class_count) |
+| Label Smoothing | 0.0 | No smoothing |
+| Reduction | Mean | Average over batch |
+| Ignore Index | -100 | Default PyTorch |
+
+---
+
+## 4. Augmentation Parameters
+
+### 4.1 Spatial Augmentations
+| Transform | Probability | Parameters | Range/Values |
+|-----------|------------|------------|--------------|
+| Random Flip X | 0.5 | spatial_axis=0 | Binary flip |
+| Random Flip Y | 0.5 | spatial_axis=1 | Binary flip |
+| Random Flip Z | 0.0 | Disabled | Anatomical constraint |
+
+### 4.2 Affine Transformations
+| Component | Probability | Range | Units |
+|-----------|------------|-------|-------|
+| Overall Probability | 0.8 | - | - |
+| Rotation (x,y,z) | - | [-0.1, 0.1] | Radians |
+| Translation X | - | [-10, 10] | mm |
+| Translation Y | - | [-10, 10] | mm |
+| Translation Z | - | [-5, 5] | mm |
+| Scale (x,y,z) | - | [-0.1, 0.1] | Fraction |
+| Shear | - | 0.0 | Disabled |
+| Interpolation Mode | - | Bilinear/Nearest | Image/Mask |
+
+### 4.3 Intensity Augmentations
+| Transform | Probability | Parameters | Distribution |
+|-----------|------------|------------|--------------|
+| Gaussian Noise | 0.3 | mean=0, std=0.1 | N(0, 0.01) |
+| Bias Field | 0.2 | degree=3, coeff=[0.0, 0.1] | Polynomial |
+| Intensity Shift | 0.0 | Disabled | - |
+| Intensity Scale | 0.0 | Disabled | - |
+
+### 4.4 Elastic Deformation
+| Parameter | Value | Range |
+|-----------|-------|-------|
+| Probability | 0.1 | - |
+| Sigma Range | [5, 8] | Gaussian kernel |
+| Magnitude Range | [100, 200] | Displacement |
+| Grid Size | [128, 128, 80] | Same as input |
+| Interpolation | Bilinear/Nearest | Image/Mask |
+| Padding Mode | Border | Constant extension |
+
+---
+
+## 5. Evaluation Parameters
+
+### 5.1 Cross-Validation
+| Parameter | Value | Implementation |
+|-----------|-------|----------------|
+| Strategy | Stratified K-Fold | sklearn.model_selection |
+| Number of Folds | 5 | 80/20 split |
+| Shuffle | True | Random permutation |
+| Random State | 42 | Reproducibility |
+
+### 5.2 Performance Metrics
+| Metric | Method | Parameters |
+|--------|--------|------------|
+| AUC-ROC | Trapezoidal Rule | sklearn.metrics |
+| Bootstrap CI | Percentile Method | n=2000, α=0.05 |
+| Youden Index | max(TPR - FPR) | All thresholds |
+| F1 Score | 2×(P×R)/(P+R) | Threshold search |
+| Sensitivity | TP/(TP+FN) | At optimal cutoff |
+| Specificity | TN/(TN+FP) | At optimal cutoff |
+
+### 5.3 Statistical Analysis
+| Parameter | Value | Method |
+|-----------|-------|--------|
+| Bootstrap Samples | 2000 | With replacement |
+| Confidence Level | 95% | Two-tailed |
+| Random Seed | 42 | NumPy random |
+| Stratification | Maintained | In bootstrap |
+| CI Method | Percentile | [2.5%, 97.5%] |
+
+---
+
+## 6. System Configuration
+
+### 6.1 Hardware Specifications
+| Component | Specification | Configuration |
+|-----------|---------------|---------------|
+| GPU Model | NVIDIA RTX 4080 | 2× units |
+| GPU Memory | 16GB GDDR6X | Per GPU |
+| GPU Driver | 535.154.05 | Linux |
+| CPU Model | Intel i9-14900K | 24 cores |
+| System RAM | 64GB DDR5-5600 | Dual channel |
+| Storage | NVMe SSD | 2TB capacity |
+
+### 6.2 CUDA Configuration
+| Parameter | Value | Purpose |
+|-----------|-------|---------|
+| CUDA Version | 11.8 | Compatibility |
+| cuDNN Version | 8.7.0 | Deep learning |
+| CUDA Benchmark | True | Dynamic kernels |
+| CUDA Deterministic | False | Speed priority |
+| CUDA Backend | cuBLAS | Matrix operations |
+
+### 6.3 DataLoader Configuration
+| Parameter | Value | Justification |
+|-----------|-------|---------------|
+| Number of Workers | 16 | CPU parallelism |
+| Pin Memory | True | GPU transfer |
+| Persistent Workers | True | Reduce overhead |
+| Prefetch Factor | 4 | Data pipeline |
+| Drop Last | True | Batch consistency |
+| Shuffle (Train) | True | Random sampling |
+| Shuffle (Test) | False | Reproducibility |
+
+### 6.4 Mixed Precision Training
+| Parameter | Value | Details |
+|-----------|-------|---------|
+| Enabled | True | Memory efficiency |
+| Initial Scale | 2^16 | 65536 |
+| Growth Factor | 2.0 | Scale increase |
+| Backoff Factor | 0.5 | Scale decrease |
+| Growth Interval | 2000 | Steps between increases |
+| AMP Backend | Native PyTorch | torch.cuda.amp |
+
+---
+
+## 7. Framework Versions
+
+### 7.1 Core Dependencies
+| Package | Version | Source |
+|---------|---------|--------|
+| Python | 3.9.16 | Official |
+| PyTorch | 2.0.1+cu118 | PyTorch.org |
+| TorchVision | 0.15.2+cu118 | PyTorch.org |
+| MONAI | 1.2.0 | PyPI |
+| NumPy | 1.24.3 | PyPI |
+| Pandas | 2.0.2 | PyPI |
+
+### 7.2 Scientific Computing
+| Package | Version | Usage |
+|---------|---------|-------|
+| scikit-learn | 1.3.0 | Cross-validation, metrics |
+| SciPy | 1.10.1 | Statistical analysis |
+| Matplotlib | 3.7.1 | Visualization |
+| Seaborn | 0.12.2 | Statistical plots |
+
+### 7.3 Utility Libraries
+| Package | Version | Purpose |
+|---------|---------|---------|
+| tqdm | 4.65.0 | Progress bars |
+| Pillow | 9.5.0 | Image I/O |
+| SimpleITK | 2.2.1 | Medical imaging |
+| nibabel | 5.1.0 | NIfTI support |
+
+---
+
+## Random Seed Configuration
+
+### Complete Determinism Setup
+```python
+# Random seed value
+SEED = 42
+
+# Python random
+import random
+random.seed(SEED)
+
+# NumPy
+import numpy as np
+np.random.seed(SEED)
+
+# PyTorch
+import torch
+torch.manual_seed(SEED)
+torch.cuda.manual_seed(SEED)
+torch.cuda.manual_seed_all(SEED)
+
+# MONAI
+from monai.utils import set_determinism
+set_determinism(seed=SEED)
+
+# Environment variables (optional for complete determinism)
+import os
+os.environ['PYTHONHASHSEED'] = str(SEED)
+os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+```
+
+---
+
+## Computational Resources
+
+### Training Time Estimates (per model)
+| Component | Time | Details |
+|-----------|------|---------|
+| Single Epoch | ~3.5 minutes | Full dataset |
+| Single Fold (30 epochs) | ~105 minutes | Including evaluation |
+| 5-Fold CV | ~8.75 hours | Complete validation |
+| Three Models | ~26.25 hours | Full experiment |
+
+### Memory Requirements
+| Stage | GPU Memory | RAM |
+|-------|------------|-----|
+| Training | ~14GB per GPU | ~32GB |
+| Inference | ~6GB | ~16GB |
+| Peak Usage | ~15GB per GPU | ~48GB |
+
+---
+
+## Verification Checklist
+
+### Pre-Training Verification
+- [ ] Dataset structure matches specification
+- [ ] All patient IDs have complete sequences
+- [ ] Labels CSV properly formatted
+- [ ] GPU drivers and CUDA installed
+- [ ] Python environment activated
+- [ ] All dependencies installed with correct versions
+
+### During Training Verification
+- [ ] Loss decreasing monotonically
+- [ ] No NaN or inf values
+- [ ] GPU utilization > 90%
+- [ ] Memory usage stable
+- [ ] Checkpoint files being saved
+- [ ] No data loading bottlenecks
+
+### Post-Training Verification
+- [ ] All folds completed successfully
+- [ ] Metrics within expected range
+- [ ] Output structure complete
+- [ ] Visualizations generated
+- [ ] Model files loadable
+- [ ] Results reproducible with same seed
+
+---
+
+
+*This document provides complete parameter specification for reproducing the experimental results reported in the paper "Influence of Voxel-of-Interest Expansion on Deep Learning-based Classification of Soft Tissue Tumors on MRI"
