@@ -58,10 +58,11 @@ Soft Tissue Tumor VOI/
 │   ├── T1/                              # T1-weighted sequences
 │   │   └── {patient_id}/
 │   │       └── {patient_id}.nii.gz
+│   │       └── seg_{patient_id}.nii.gz # Segmentation mask       
 │   └── T2/                              # T2-weighted sequences
 │       └── {patient_id}/
 │           └── {patient_id}.nii.gz
-│
+│   │       └── seg_{patient_id}.nii.gz # Segmentation mask
 ├── normalization_ROI/                   # Model 2: Standard VOI
 │   └── [Same structure as above]
 │
