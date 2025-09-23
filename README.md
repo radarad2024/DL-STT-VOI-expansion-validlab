@@ -1,6 +1,3 @@
-# DL-STT-VOI-expansion-validlab
-Influence of Voxel-of-Interest Expansion on Deep Learning-based Classification of Soft Tissue Tumors on MRI
-
 # 3D MRI Multi-Sequence Soft Tissue Tumor Classification
 
 ## Project Overview
@@ -293,9 +290,7 @@ config = TrainingConfig(
     learning_rate=1e-4,
     n_folds=5
 )
-``
-
-
+```
 
 ## Acknowledgments
 
