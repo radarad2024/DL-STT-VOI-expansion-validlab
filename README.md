@@ -1,4 +1,4 @@
-# 3D MRI Multi-Sequence Soft Tissue Tumor Classification
+# Multi-Sequence Soft Tissue Tumor Classification
 
 ## Project Overview
 
