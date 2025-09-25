@@ -194,7 +194,6 @@
 | AUC-ROC | Trapezoidal Rule | sklearn.metrics |
 | Bootstrap CI | Percentile Method | n=2000, α=0.05 |
 | Youden Index | max(TPR - FPR) | All thresholds |
-| F1 Score | 2×(P×R)/(P+R) | Threshold search |
 | Sensitivity | TP/(TP+FN) | At optimal cutoff |
 | Specificity | TN/(TN+FP) | At optimal cutoff |
 
