@@ -4,7 +4,7 @@
 
 This repository contains the implementation of a deep learning framework for automated classification of soft tissue tumors using multi-parametric 3D MRI data. 
 ### Key Features
-- Multi-sequence MRI fusion (T1-weighted, T2-weighted, Contrast-enhanced)
+- Multi-sequence MRI fusion (T1-weighted, T2-weighted, Contrast-enhanced T1-weighted)
 - Three distinct VOI extraction strategies
 - 5-fold cross-validation with stratification
 - Comprehensive statistical evaluation with bootstrap confidence intervals
@@ -52,16 +52,16 @@ Soft Tissue Tumor VOI/
 ├── normalization_BoundingBox/           # Model 1: Tight bounding box
 │   ├── EN/                              # Contrast-enhanced sequences
 │   │   └── {patient_id}/
-│   │       ├── {patient_id}.nii.gz     # Image volume
-│   │       └── seg_{patient_id}.nii.gz # Segmentation mask
+│   │       ├── en.nii.gz     # Image volume
+│   │       └── seg_en.nii.gz # Segmentation mask
 │   ├── T1/                              # T1-weighted sequences
 │   │   └── {patient_id}/
-│   │       └── {patient_id}.nii.gz
-│   │       └── seg_{patient_id}.nii.gz # Segmentation mask       
+│   │       └── t1.nii.gz     # Image volume
+│   │       └── seg_t1.nii.gz # Segmentation mask       
 │   └── T2/                              # T2-weighted sequences
 │       └── {patient_id}/
-│           └── {patient_id}.nii.gz
-│   │       └── seg_{patient_id}.nii.gz # Segmentation mask
+│           └── t2.nii.gz     # Image volume
+│   │       └── seg_t2.nii.gz # Segmentation mask
 ├── normalization_ROI/                   # Model 2: Standard VOI
 │   └── [Same structure as above]
 │
@@ -71,7 +71,7 @@ Soft Tissue Tumor VOI/
 
 ### Data Specifications
 - **Image Format**: NIfTI (.nii.gz)
-- **Sequences**: T1-weighted, T2-weighted, Contrast-enhanced (EN)
+- **Sequences**: T1-weighted, T2-weighted, Contrast-enhanced T1-weighted (EN)
 - **Segmentation**: Binary tumor masks for VOI extraction
 - **Labels**: Binary classification (0: benign, 1: malignant)
 
@@ -186,14 +186,12 @@ torch.backends.cudnn.deterministic = False  # Speed over reproducibility
 2. **95% CI**: Bootstrap confidence intervals (2000 samples)
 
 ### Secondary Metrics
-1. **Youden Index Optimization**
+
+**Youden Index Optimization**
    - Optimal cutoff via J-statistic
    - Sensitivity at optimal point
    - Specificity at optimal point
 
-2. **F1 Score Optimization**
-   - Optimal cutoff via F1 maximization
-   - Precision-recall balance
 
 ### Statistical Analysis
 - **Bootstrap Samples**: 2000
