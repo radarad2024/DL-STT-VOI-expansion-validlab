@@ -2,8 +2,7 @@
 
 ## Project Overview
 
-This repository contains the implementation of a deep learning framework for automated classification of soft tissue tumors using multi-parametric 3D MRI data. The framework employs a multi-model ensemble approach with different Volume of Interest (VOI) extraction strategies to improve classification robustness.
-
+This repository contains the implementation of a deep learning framework for automated classification of soft tissue tumors using multi-parametric 3D MRI data. 
 ### Key Features
 - Multi-sequence MRI fusion (T1-weighted, T2-weighted, Contrast-enhanced)
 - Three distinct VOI extraction strategies
