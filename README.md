@@ -51,11 +51,16 @@ Three VOI strategies are compared:
 
 | Model | AUC [95% CI] | Sensitivity [95% CI] | Specificity [95% CI] |
 |:---:|:---:|:---:|:---:|
-| R-VOI | 0.834 [0.732, 0.936] | 0.900 [0.683, 0.988] | 0.553 [0.383, 0.714] |
-| S-VOI | 0.816 [0.704, 0.928] | 0.950 [0.751, 0.999] | 0.368 [0.218, 0.540] |
-| E-VOI | **0.849** [0.748, 0.949] | 0.900 [0.683, 0.988] | **0.632** [0.460, 0.782] |
-| Reader 1 | 0.909 [0.837, 0.981] | 0.850 [0.621, 0.968] | 0.868 [0.719, 0.956] |
-| Reader 2 | 0.755 [0.631, 0.880] | 0.750 [0.509, 0.913] | 0.684 [0.513, 0.825] |
+| R-VOI | 0.834 [0.720, 0.928] | 0.900 [0.683, 0.988] | 0.553 [0.383, 0.714] |
+| S-VOI | 0.816 [0.693, 0.916] | 0.950 [0.751, 0.999] | 0.368 [0.218, 0.540] |
+| E-VOI | **0.849** [0.736, 0.940] | 0.900 [0.683, 0.988] | **0.632** [0.460, 0.782] |
+| Reader 1 | 0.909 [0.829, 0.970] | 0.850 [0.621, 0.968] | 0.868 [0.719, 0.956] |
+| Reader 2 | 0.755 [0.619, 0.872] | 0.750 [0.509, 0.913] | 0.684 [0.513, 0.825] |
+
+<p align="center">
+  <img src="docs/fig3_roc_curves.png" width="700" alt="ROC curves for internal and external validation">
+</p>
+<p align="center"><em>ROC curves. (a) Internal 5-fold cross-validation. (b) External validation with reader comparison.</em></p>
 
 ---
 
@@ -68,7 +73,11 @@ DL-STT-VOI-expansion-validlab/
 ├── REPRODUCTION.md            # Complete parameter documentation
 ├── train_5cv.py               # Unified 5-fold CV training (S/E/R-VOI)
 ├── evaluate_external.py       # External validation script
-└── main                       # Entry point
+├── main                       # Entry point
+└── docs/
+    ├── fig2_pipeline.png      # DenseNet-121 model pipeline
+    ├── fig3_roc_curves.png    # ROC curves (internal + external)
+    └── pipeline_overview.svg  # Pipeline overview diagram
 ```
 
 ---
