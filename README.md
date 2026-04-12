@@ -1,297 +1,197 @@
-# Multi-Sequence Soft Tissue Tumor Classification
+# Influence of VOI Expansion on Deep Learning–based Classification of Soft Tissue Tumors on MRI
 
-## Project Overview
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
+[![PyTorch 2.0+](https://img.shields.io/badge/pytorch-2.0%2B-ee4c2c.svg)](https://pytorch.org/)
+[![MONAI 1.2+](https://img.shields.io/badge/MONAI-1.2%2B-green.svg)](https://monai.io/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-This repository contains the implementation of a deep learning framework for automated classification of soft tissue tumors using multi-parametric 3D MRI data. 
-### Key Features
-- Multi-sequence MRI fusion (T1-weighted, T2-weighted, Contrast-enhanced T1-weighted)
-- Three distinct VOI extraction strategies
-- 5-fold cross-validation with stratification
-- Comprehensive statistical evaluation with bootstrap confidence intervals
-- GPU-optimized training with DataParallel support
+Official implementation of:
 
-## System Requirements
+> **Influence of Voxel-of-Interest Expansion on Deep Learning-based Classification of Soft Tissue Tumors on MRI**
+>
+> *Investigative Magnetic Resonance Imaging (iMRI), 2026*
 
-### Hardware Requirements
-- **Minimum GPU Memory**: 16GB VRAM (single GPU)
-- **Recommended Setup**: 2× NVIDIA RTX 4080 (16GB each) or equivalent
-- **CPU**: Intel Core i9-14900K or equivalent (≥16 cores recommended)
-- **RAM**: 64GB DDR5
-- **Storage**: 500GB SSD for dataset and outputs
+---
 
-### Software Dependencies
-```
-Python 3.9.16
-PyTorch 2.0.1
-CUDA 11.8
-cuDNN 8.7.0
-MONAI 1.2.0
-```
+## Overview
 
-### Python Package Requirements
-```python
-torch==2.0.1+cu118
-monai==1.2.0
-numpy==1.24.3
-pandas==2.0.2
-scikit-learn==1.3.0
-scipy==1.10.1
-matplotlib==3.7.1
-seaborn==0.12.2
-tqdm==4.65.0
-```
+This repository provides the training and external validation code for a DenseNet-121–based classification model that distinguishes benign from malignant soft tissue tumors (STTs) on multi-sequence MRI. We investigate the effect of expanding the voxel-of-interest (VOI) beyond the tumor margin on diagnostic performance.
 
-## Dataset Structure
+Three VOI strategies are compared:
 
-### Directory Organization
-```
-Soft Tissue Tumor VOI/
-│
-├── labels.csv                           # Patient labels (patient_id, label)
-│
-├── normalization_BoundingBox/           # Model 1: Tight bounding box
-│   ├── EN/                              # Contrast-enhanced sequences
-│   │   └── {patient_id}/
-│   │       ├── en.nii.gz     # Image volume
-│   │       └── seg_en.nii.gz # Segmentation mask
-│   ├── T1/                              # T1-weighted sequences
-│   │   └── {patient_id}/
-│   │       └── t1.nii.gz     # Image volume
-│   │       └── seg_t1.nii.gz # Segmentation mask       
-│   └── T2/                              # T2-weighted sequences
-│       └── {patient_id}/
-│           └── t2.nii.gz     # Image volume
-│   │       └── seg_t2.nii.gz # Segmentation mask
-├── normalization_ROI/                   # Model 2: Standard VOI
-│   └── [Same structure as above]
-│
-└── normalization_Dilation1cm/           # Model 3: Expanded VOI (+1cm)
-    └── [Same structure as above]
-```
+| Model | VOI Type | Description |
+|:---:|:---:|:---|
+| Model 1 | **R-VOI** | Rectangular bounding box enclosing the tumor |
+| Model 2 | **S-VOI** | Standard tumor segmentation mask |
+| Model 3 | **E-VOI** | 1 cm peritumoral expansion beyond the tumor boundary |
 
-### Data Specifications
-- **Image Format**: NIfTI (.nii.gz)
-- **Sequences**: T1-weighted, T2-weighted, Contrast-enhanced T1-weighted (EN)
-- **Segmentation**: Binary tumor masks for VOI extraction
-- **Labels**: Binary classification (0: benign, 1: malignant)
+<p align="center">
+  <img src="docs/fig2_pipeline.png" width="700" alt="Model pipeline">
+</p>
 
-## Preprocessing Pipeline
+### Key Findings
 
-### 1. Image Loading
-- **Framework**: MONAI LoadImaged
-- **Channel Management**: EnsureChannelFirstd
-- **Format**: NIfTI with automatic orientation correction
+- **E-VOI achieved the highest AUC** among the three models in both internal and external validation
+- Incorporating peritumoral regions improved diagnostic performance and model interpretability
+- Occlusion-based heatmaps demonstrated pronounced activation in the peritumoral region for E-VOI
 
-### 2. Spatial Resampling
-- **Method**: Trilinear interpolation for images, nearest-neighbor for masks
-- **Target Spacing**: [1.0, 1.0, 2.0] mm (x, y, z)
-- **Implementation**: MONAI Spacingd
+---
 
-### 3. Volume Standardization
-- **Target Size**: [128, 128, 80] voxels
-- **Method**: Trilinear resampling for images
-- **Implementation**: MONAI Resized
+## Results
 
-### 4. Intensity Normalization
-- **Step 1**: Scale intensity to [0, 1] range (ScaleIntensityd)
-- **Step 2**: Mask-based intensity extraction (MaskIntensityd)
-- **Step 3**: Z-score normalization within non-zero regions (NormalizeIntensityd)
+### Internal Validation (5-Fold Cross-Validation, n = 125)
 
-### 5. Data Augmentation (Training Only)
-| Augmentation | Probability | Parameters |
-|--------------|------------|------------|
-| Random Flip (X-axis) | 0.5 | spatial_axis=0 |
-| Random Flip (Y-axis) | 0.5 | spatial_axis=1 |
-| Random Affine | 0.8 | rotation=±0.1 rad, translation=±10mm (x,y), ±5mm (z), scale=±10% |
-| Gaussian Noise | 0.3 | mean=0, std=0.1 |
-| Bias Field | 0.2 | degree=3, coeff_range=(0.0, 0.1) |
-| 3D Elastic Deformation | 0.1 | sigma=(5,8), magnitude=(100,200) |
+| Model | AUC [95% CI] | Sensitivity [95% CI] | Specificity [95% CI] |
+|:---:|:---:|:---:|:---:|
+| R-VOI | 0.775 [0.672, 0.844] | 0.722 [0.584, 0.835] | **0.817** [0.707, 0.899] |
+| S-VOI | 0.769 [0.677, 0.841] | 0.833 [0.707, 0.921] | 0.676 [0.555, 0.782] |
+| E-VOI | **0.789** [0.696, 0.858] | **0.833** [0.707, 0.921] | 0.690 [0.569, 0.795] |
 
-## Model Architecture
+### External Validation (n = 58)
 
-### Base Network
-- **Architecture**: DenseNet-121 (3D variant)
-- **Implementation**: MONAI networks
-- **Input Channels**: 3 (concatenated T1, T2, EN)
-- **Output Classes**: 2 (binary classification)
-- **Spatial Dimensions**: 3D
+| Model | AUC [95% CI] | Sensitivity [95% CI] | Specificity [95% CI] |
+|:---:|:---:|:---:|:---:|
+| R-VOI | 0.834 [0.732, 0.936] | 0.900 [0.683, 0.988] | 0.553 [0.383, 0.714] |
+| S-VOI | 0.816 [0.704, 0.928] | 0.950 [0.751, 0.999] | 0.368 [0.218, 0.540] |
+| E-VOI | **0.849** [0.748, 0.949] | 0.900 [0.683, 0.988] | **0.632** [0.460, 0.782] |
+| Reader 1 | 0.909 [0.837, 0.981] | 0.850 [0.621, 0.968] | 0.868 [0.719, 0.956] |
+| Reader 2 | 0.755 [0.631, 0.880] | 0.750 [0.509, 0.913] | 0.684 [0.513, 0.825] |
 
-### Multi-Model Ensemble
-1. **Model 1 - BoundingBox**: Tight tumor bounding box extraction
-2. **Model 2 - StandardVOI**: Standard VOI with original segmentation
-3. **Model 3 - ExpandedVOI**: Dilated VOI with 1cm margin
+---
 
-### Technical Details
-- **Total Parameters**: ~7.2M
-- **Trainable Parameters**: ~7.2M
-- **Growth Rate**: 32
-- **Dense Blocks**: 4
-- **Compression Factor**: 0.5
-
-## Training Configuration
-
-### Optimization Settings
-| Parameter | Value | Justification |
-|-----------|-------|---------------|
-| Optimizer | AdamW | Better generalization with weight decay |
-| Learning Rate | 1e-4 | Optimal for batch size 32 |
-| Weight Decay | 1e-5 | L2 regularization |
-| Batch Size | 32 | 16 per GPU with DataParallel |
-| Epochs | 30 | Fixed training without early stopping |
-| Gradient Clipping | 1.0 | Prevent gradient explosion |
-| Mixed Precision | FP16 | Memory efficiency with AMP |
-
-### Learning Rate Schedule
-- **Scheduler**: CosineAnnealingWarmRestarts
-- **T_0**: 10 epochs (restart period)
-- **T_mult**: 2 (period multiplier)
-- **eta_min**: 1e-6 (minimum LR)
-
-### Class Balancing
-- **Method**: Weighted Cross-Entropy Loss
-- **Weight Calculation**: Inverse class frequency
-- **Implementation**: Automatic from training set distribution
-
-### Cross-Validation
-- **Strategy**: Stratified K-Fold
-- **Folds**: 5
-- **Random Seed**: 42 (for reproducibility)
-- **Test Set**: 20% per fold (hold-out)
-
-## Performance Optimization
-
-### GPU Utilization
-- **DataParallel**: Automatic multi-GPU distribution
-- **Device IDs**: [0, 1] (customizable)
-- **Pin Memory**: Enabled
-- **Persistent Workers**: 16 processes
-- **Prefetch Factor**: 4 batches
-
-### Memory Management
-- **Gradient Accumulation**: 1 step (adjustable)
-- **Memory Cleanup Interval**: Every 25 batches
-- **Automatic Mixed Precision**: Enabled
-- **Dynamic Loss Scaling**: 2^16 initial scale
-
-### CUDA Settings
-```python
-torch.backends.cudnn.benchmark = True       # Dynamic kernel selection
-torch.backends.cudnn.deterministic = False  # Speed over reproducibility
-```
-
-## Evaluation Metrics
-
-### Primary Metrics
-1. **AUC-ROC**: Area under receiver operating characteristic curve
-2. **95% CI**: Bootstrap confidence intervals (2000 samples)
-
-### Secondary Metrics
-
-**Youden Index Optimization**
-   - Optimal cutoff via J-statistic
-   - Sensitivity at optimal point
-   - Specificity at optimal point
-
-
-### Statistical Analysis
-- **Bootstrap Samples**: 2000
-- **Confidence Level**: 95%
-- **Random State**: 42 (reproducibility)
-
-## Output Structure
+## Repository Structure
 
 ```
-output_dataparallel_optimized/
-│
-├── Model_1_BoundingBox/
-│   ├── fold_1/
-│   │   ├── metrics/
-│   │   │   ├── epoch_metrics.json
-│   │   │   ├── final_results.json
-│   │   │   └── test_classification_report.json
-│   │   ├── plots/
-│   │   │   ├── learning_curves.png
-│   │   │   ├── test_prediction_analysis.png
-│   │   │   └── test_confusion_matrix.png
-│   │   ├── predictions/
-│   │   │   └── test_predictions.csv
-│   │   ├── checkpoints/
-│   │   │   └── epoch_{10,20,30}.pth
-│   │   ├── final_model.pth
-│   │   └── summary.txt
-│   ├── fold_2-5/
-│   │   └── [Same structure]
-│   ├── model_summary.json
-│   └── model_report.txt
-│
-├── Model_2_StandardVOI/
-│   └── [Same structure]
-│
-├── Model_3_ExpandedVOI/
-│   └── [Same structure]
-│
-└── model_comparison/
-    └── model_comparison.csv
+DL-STT-VOI-expansion-validlab/
+├── README.md                  # This file
+├── USAGE_GUIDE.md             # Step-by-step training & evaluation guide
+├── REPRODUCTION.md            # Complete parameter documentation
+├── train_5cv.py               # Unified 5-fold CV training (S/E/R-VOI)
+├── evaluate_external.py       # External validation script
+└── main                       # Entry point
 ```
 
-## Reproducibility Checklist
+---
 
-### Environment Setup
+## Requirements
+
+### Hardware
+- 2× NVIDIA RTX 4080 (16 GB VRAM each) or equivalent
+- 64 GB system RAM
+- NVMe SSD recommended
+
+### Software
+
 ```bash
-# 1. Create conda environment
-conda create -n mri_classification python=3.9.16
-
-# 2. Activate environment
-conda activate mri_classification
-
-# 3. Install PyTorch with CUDA
-pip install torch==2.0.1+cu118 torchvision==0.15.2+cu118 --index-url https://download.pytorch.org/whl/cu118
-
-# 4. Install MONAI and dependencies
-pip install monai==1.2.0
-pip install -r requirements.txt
+pip install torch==2.0.1 torchvision==0.15.2 monai==1.2.0 \
+    scikit-learn==1.3.0 pandas==2.0.2 numpy==1.24.3 \
+    matplotlib==3.7.1 tqdm==4.65.0 nibabel==5.1.0
 ```
 
-### Critical Parameters for Reproduction
-✅ Random seed: 42 (all random operations)
-✅ MONAI determinism: Enabled
-✅ Target spacing: [1.0, 1.0, 2.0] mm
-✅ Volume size: [128, 128, 80] voxels
-✅ Batch size: 32
-✅ Learning rate: 1e-4
-✅ Training epochs: 30
-✅ Cross-validation folds: 5
-✅ Data augmentation probabilities: See table above
+| Package | Version | Purpose |
+|:---|:---:|:---|
+| Python | 3.9+ | Runtime |
+| PyTorch | 2.0.1+cu118 | Deep learning framework |
+| MONAI | 1.2.0 | Medical imaging transforms & DenseNet-121 |
+| scikit-learn | 1.3.0 | Cross-validation, metrics |
+| NumPy | 1.24.3 | Numerical computation |
+| Pandas | 2.0.2 | Data handling |
 
-## Running the Code
+---
 
-### Basic Training
-```python
-from training_script import TrainingConfig, train_all_models_sequential
+## Data Preparation
 
-# Initialize configuration
-config = TrainingConfig()
+### Directory Structure
 
-# Run training
-results = train_all_models_sequential(config)
+Each VOI type requires three MRI sequences (T1WI, T2WI, CE-FS-T1WI) and segmentation masks organized as:
 
-# Save comparison
-save_final_comparison(results, config)
+```
+data_root/
+├── EN/                        # Contrast-enhanced fat-suppressed T1WI
+│   ├── patient_001/
+│   │   ├── image.nii.gz
+│   │   └── seg_mask.nii.gz
+│   ├── patient_002/
+│   │   ├── image.nii.gz
+│   │   └── seg_mask.nii.gz
+│   └── ...
+├── T1/                        # T1-weighted images
+│   ├── patient_001/
+│   │   └── image.nii.gz
+│   └── ...
+└── T2/                        # T2-weighted images
+    ├── patient_001/
+    │   └── image.nii.gz
+    └── ...
 ```
 
-### Custom Configuration
-```python
-config = TrainingConfig(
-    root_dir="/path/to/data",
-    epochs=30,
-    batch_size=32,
-    learning_rate=1e-4,
-    n_folds=5
-)
+### Label File
+
+A CSV file mapping patient IDs to binary labels:
+
+```csv
+patient_id,label
+patient_001,0
+patient_002,1
+...
 ```
 
-## Acknowledgments
+- `0` = benign
+- `1` = malignant
 
-- MONAI Project for medical imaging deep learning framework
-- PyTorch team for the deep learning platform
-- NVIDIA for CUDA and mixed precision training support
+---
+
+## Quick Start
+
+### Training (5-Fold Cross-Validation)
+
+```bash
+python train_5cv.py \
+    --voi_type s_voi \
+    --data_root /path/to/data \
+    --label_file /path/to/labels.csv \
+    --output_dir /path/to/output \
+    --epochs 30 \
+    --batch_size 32 \
+    --lr 5e-5
+```
+
+VOI type options: `s_voi`, `e_voi`, `r_voi`
+
+### External Validation
+
+```bash
+python evaluate_external.py \
+    --voi_type e_voi \
+    --model_path /path/to/checkpoint.pth \
+    --data_root /path/to/external_data \
+    --label_file /path/to/external_labels.csv
+```
+
+For detailed instructions, see [USAGE_GUIDE.md](USAGE_GUIDE.md).
+For complete parameter specifications, see [REPRODUCTION.md](REPRODUCTION.md).
+
+---
+
+## Citation
+
+If you use this code, please cite:
+
+```bibtex
+@article{stt_voi_expansion_2026,
+  title={Influence of Voxel-of-Interest Expansion on Deep Learning-based 
+         Classification of Soft Tissue Tumors on MRI},
+  journal={Investigative Magnetic Resonance Imaging},
+  year={2026}
+}
+```
+
+---
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+
+---
+
+*Last updated: April 12, 2026*
