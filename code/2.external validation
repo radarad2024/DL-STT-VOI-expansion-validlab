@@ -1,0 +1,144 @@
+# External Validation
+
+Statistical evaluation of DL models and radiologist readers on external test cohort.
+
+- **AUC**: DeLong 95% CI
+- **Sensitivity / Specificity**: Clopper-Pearson exact binomial 95% CI
+- **Threshold**: Predetermined from training set (sensitivity ≥ 80%, max specificity)
+## 1. Setup
+import numpy as np
+import pandas as pd
+from scipy import stats
+from sklearn.metrics import roc_auc_score, roc_curve, confusion_matrix
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+# ── Path to results file ──
+# CSV columns: patient_id, label, R-VOI_prob, S-VOI_prob, E-VOI_prob, Reader1, Reader2
+RESULTS_CSV = ""
+OUTPUT_DIR  = ""
+
+df = pd.read_csv(RESULTS_CSV)
+y_true = df["label"].values
+n = len(df)
+print(f"n={n}, malignant={y_true.sum()}, benign={(y_true==0).sum()}")
+## 2. Thresholds
+
+Predetermined from training set: sensitivity ≥ 80% with maximum specificity.
+THRESHOLDS = {
+    "R-VOI": 0.440868,
+    "S-VOI": 0.406421,
+    "E-VOI": 0.467391,
+}
+READER_CUTOFF = 3  # score >= 3 = malignant
+## 3. Statistical Methods
+def delong_auc_ci(y_true, y_score, alpha=0.05):
+    """AUC with DeLong 95% CI."""
+    y_true, y_score = np.array(y_true), np.array(y_score)
+    pos, neg = y_score[y_true==1], y_score[y_true==0]
+    m, n = len(pos), len(neg)
+    auc = roc_auc_score(y_true, y_score)
+    V10 = np.array([np.mean((neg < p) + 0.5*(neg == p)) for p in pos])
+    V01 = np.array([np.mean((pos > q) + 0.5*(pos == q)) for q in neg])
+    var = np.var(V10, ddof=1)/m + np.var(V01, ddof=1)/n if (m>1 and n>1) else 0
+    z = stats.norm.ppf(1 - alpha/2)
+    se = np.sqrt(var)
+    return auc, max(0, auc-z*se), min(1, auc+z*se), var
+
+def clopper_pearson(x, n, alpha=0.05):
+    """Exact binomial 95% CI."""
+    p = x/n if n>0 else 0
+    lo = stats.beta.ppf(alpha/2, x, n-x+1) if x>0 else 0.0
+    hi = stats.beta.ppf(1-alpha/2, x+1, n-x) if x<n else 1.0
+    return p, lo, hi
+
+def delong_test(y_true, y1, y2):
+    """Paired DeLong test."""
+    a1, _, _, v1 = delong_auc_ci(y_true, y1)
+    a2, _, _, v2 = delong_auc_ci(y_true, y2)
+    y_true = np.array(y_true); y1, y2 = np.array(y1), np.array(y2)
+    pi, ni = np.where(y_true==1)[0], np.where(y_true==0)[0]
+    m, n = len(pi), len(ni)
+    V10_1 = np.array([np.mean((y1[ni]<y1[i])+0.5*(y1[ni]==y1[i])) for i in pi])
+    V10_2 = np.array([np.mean((y2[ni]<y2[i])+0.5*(y2[ni]==y2[i])) for i in pi])
+    V01_1 = np.array([np.mean((y1[pi]>y1[j])+0.5*(y1[pi]==y1[j])) for j in ni])
+    V01_2 = np.array([np.mean((y2[pi]>y2[j])+0.5*(y2[pi]==y2[j])) for j in ni])
+    cov = (np.cov(V10_1,V10_2)[0,1]/m + np.cov(V01_1,V01_2)[0,1]/n) if (m>1 and n>1) else 0
+    var_diff = v1 + v2 - 2*cov
+    z = (a1-a2)/np.sqrt(var_diff) if var_diff>0 else 0
+    return a1, a2, 2*(1-stats.norm.cdf(abs(z)))
+## 4. Diagnostic Performance
+scores = {}
+print(f"{'Model':<12} {'AUC [95% CI]':<30} {'Sensitivity [95% CI]':<28} {'Specificity [95% CI]':<28}")
+print("-"*98)
+
+# DL models
+for name in ["R-VOI", "S-VOI", "E-VOI"]:
+    yp = df[f"{name}_prob"].values
+    scores[name] = yp
+    auc, lo, hi, _ = delong_auc_ci(y_true, yp)
+    pred = (yp >= THRESHOLDS[name]).astype(int)
+    tn, fp, fn, tp = confusion_matrix(y_true, pred).ravel()
+    sens, slo, shi = clopper_pearson(tp, tp+fn)
+    spec, plo, phi = clopper_pearson(tn, tn+fp)
+    print(f"{name:<12} {auc:.3f} [{lo:.3f}, {hi:.3f}]"
+          f"          {sens:.3f} [{slo:.3f}, {shi:.3f}]"
+          f"        {spec:.3f} [{plo:.3f}, {phi:.3f}]")
+
+# Readers
+for col, label in [("Reader1", "Reader 1"), ("Reader2", "Reader 2")]:
+    rs = df[col].values.astype(float)
+    scores[col] = rs
+    auc, lo, hi, _ = delong_auc_ci(y_true, rs)
+    pred = (rs >= READER_CUTOFF).astype(int)
+    tn, fp, fn, tp = confusion_matrix(y_true, pred).ravel()
+    sens, slo, shi = clopper_pearson(tp, tp+fn)
+    spec, plo, phi = clopper_pearson(tn, tn+fp)
+    print(f"{label:<12} {auc:.3f} [{lo:.3f}, {hi:.3f}]"
+          f"          {sens:.3f} [{slo:.3f}, {shi:.3f}]"
+          f"        {spec:.3f} [{plo:.3f}, {phi:.3f}]")
+## 5. Pairwise DeLong Tests
+print(f"{'Comparison':<25} {'p-value':>9}")
+print("-"*35)
+pairs = [("E-VOI","S-VOI"),("E-VOI","R-VOI"),("S-VOI","R-VOI"),
+         ("E-VOI","Reader1"),("E-VOI","Reader2"),
+         ("S-VOI","Reader1"),("S-VOI","Reader2"),
+         ("R-VOI","Reader1"),("R-VOI","Reader2"),
+         ("Reader1","Reader2")]
+for n1, n2 in pairs:
+    _, _, p = delong_test(y_true, scores[n1], scores[n2])
+    sig = " *" if p < 0.05 else ""
+    print(f"{n1+' vs '+n2:<25} {p:>9.4f}{sig}")
+## 6. ROC Curve
+plt.rcParams.update({"font.family": "sans-serif", "font.sans-serif": ["Arial"], "font.size": 11})
+colors = {"R-VOI":"#E53935","S-VOI":"#43A047","E-VOI":"#1E88E5","Reader1":"#7B1FA2","Reader2":"#F57C00"}
+
+fig, ax = plt.subplots(figsize=(7, 6.5), dpi=400)
+ax.set_facecolor("white")
+
+for name in ["R-VOI", "S-VOI", "E-VOI"]:
+    fpr, tpr, _ = roc_curve(y_true, scores[name])
+    auc, lo, hi, _ = delong_auc_ci(y_true, scores[name])
+    lw = 2.2 if name == "E-VOI" else 2.0
+    ax.step(fpr, tpr, where="post", color=colors[name], lw=lw,
+            label=f"{name}: AUC={auc:.3f} (95% CI: {lo:.3f}\u2013{hi:.3f})")
+
+for col, label, ls in [("Reader1","Reader 1","--"),("Reader2","Reader 2","--")]:
+    fpr, tpr, _ = roc_curve(y_true, scores[col])
+    auc, lo, hi, _ = delong_auc_ci(y_true, scores[col])
+    ax.step(fpr, tpr, where="post", color=colors[col], lw=1.8, linestyle=ls,
+            label=f"{label}: AUC={auc:.3f} (95% CI: {lo:.3f}\u2013{hi:.3f})")
+
+ax.plot([0,1],[0,1],"--",color="#AAAAAA",lw=1.0,alpha=0.6,label="Chance (AUC=0.500)")
+ax.set(xlim=[-0.02,1.02], ylim=[-0.02,1.02])
+ax.set_xlabel("False Positive Rate (1 - Specificity)", fontsize=12, fontweight="bold")
+ax.set_ylabel("True Positive Rate (Sensitivity)", fontsize=12, fontweight="bold")
+ax.set_title("External Validation", fontsize=14, fontweight="bold")
+ax.set_aspect("equal"); ax.grid(True, alpha=0.15)
+ax.legend(loc="lower right", fontsize=7.8)
+ax.text(0.02, 0.97, "(b)", transform=ax.transAxes, fontsize=16, fontweight="bold", va="top")
+plt.tight_layout()
+plt.savefig(f"{OUTPUT_DIR}/Fig3b_External_ROC.png", dpi=400, bbox_inches="tight")
+plt.savefig(f"{OUTPUT_DIR}/Fig3b_External_ROC.tiff", dpi=400, bbox_inches="tight")
+plt.show()
