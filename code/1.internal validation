@@ -1,0 +1,322 @@
+# Internal Validation: 5-Fold Cross-Validation
+
+DenseNet-121 for soft tissue tumor classification on multi-sequence MRI.
+
+**Three VOI strategies**: R-VOI (rectangular), S-VOI (standard segmentation), E-VOI (1 cm expansion)
+## 1. Configuration
+import os
+import gc
+import json
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+from torch.utils.data.dataloader import default_collate
+from torch.nn.functional import softmax
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import roc_auc_score, roc_curve, confusion_matrix
+from monai.data import Dataset as MonaiDataset
+from monai.transforms import (
+    Compose, LoadImaged, EnsureChannelFirstd, Spacingd, Resized,
+    MaskIntensityd, RandFlipd, RandAffined, RandGaussianNoised,
+    RandBiasFieldd, Rand3DElasticd, ToTensord, MapTransform,
+)
+from monai.networks.nets import DenseNet121
+from monai.utils import set_determinism
+import matplotlib.pyplot as plt
+
+# ── Set paths ──
+DATA_DIRS = {
+    "R-VOI": "",  # path to R-VOI (BoundingBox) images
+    "S-VOI": "",  # path to S-VOI (standard ROI) images
+    "E-VOI": "",  # path to E-VOI (1cm dilation) images
+}
+LABEL_FILE = ""   # path to labels.csv
+OUTPUT_DIR = ""   # path to save models and results
+
+# ── Hyperparameters ──
+SEED       = 42
+N_FOLDS    = 5
+EPOCHS     = 30
+BATCH_SIZE = 32
+LR         = 5e-5
+SPACING    = (1.0, 1.0, 2.0)
+ROI_SIZE   = (128, 128, 80)
+
+set_determinism(seed=SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+print(f"Device: {device}")
+## 2. Normalization & Transforms
+class IntensityNormalization(MapTransform):
+    """f(x) = (x - mean) / std * 1000, computed on nonzero voxels only."""
+    def __init__(self, keys, allow_missing_keys=False):
+        super().__init__(keys, allow_missing_keys)
+    def __call__(self, data):
+        d = dict(data)
+        for key in self.keys:
+            img = d[key]
+            mask = img > 0
+            if mask.sum() > 0:
+                mu, sigma = img[mask].mean(), img[mask].std()
+                if sigma > 0:
+                    img = np.where(mask, (img - mu) / sigma * 1000, 0)
+            d[key] = img
+        return d
+
+IMG_KEYS = ["en_img", "t1_img", "t2_img"]
+SEG_KEYS = ["en_lbl", "t1_lbl", "t2_lbl"]
+ALL_KEYS = IMG_KEYS + SEG_KEYS
+
+def get_transforms(train=True):
+    t = [
+        LoadImaged(keys=ALL_KEYS, image_only=True),
+        EnsureChannelFirstd(keys=ALL_KEYS),
+        Spacingd(keys=ALL_KEYS, pixdim=SPACING, mode=["bilinear"]*3 + ["nearest"]*3),
+        Resized(keys=ALL_KEYS, spatial_size=ROI_SIZE, mode=["trilinear"]*3 + ["nearest"]*3),
+        MaskIntensityd(keys=IMG_KEYS, mask_key="en_lbl"),
+        IntensityNormalization(keys=IMG_KEYS),
+    ]
+    if train:
+        t += [
+            RandFlipd(keys=ALL_KEYS, prob=0.5, spatial_axis=0),
+            RandFlipd(keys=ALL_KEYS, prob=0.5, spatial_axis=1),
+            RandAffined(keys=ALL_KEYS, mode=["bilinear"]*3+["nearest"]*3,
+                        prob=0.8, rotate_range=[0.1]*3, translate_range=[10,10,5], scale_range=[0.1]*3),
+            RandGaussianNoised(keys=IMG_KEYS, prob=0.3, mean=0.0, std=0.1),
+            RandBiasFieldd(keys=IMG_KEYS, prob=0.2, degree=3, coeff_range=(0.0, 0.1)),
+            Rand3DElasticd(keys=ALL_KEYS, prob=0.1, sigma_range=(5,8), magnitude_range=(100,200),
+                           spatial_size=ROI_SIZE, mode=["bilinear"]*3+["nearest"]*3),
+        ]
+    t.append(ToTensord(keys=IMG_KEYS))
+    return Compose(t)
+## 3. Data Loading
+def load_labels(path):
+    df = pd.read_csv(path)
+    return df.set_index("patient_id")["label"].astype(int).to_dict()
+
+def build_file_list(data_dir, labels):
+    seq_dirs = {"en": None, "t1": None, "t2": None}
+    for d in os.listdir(data_dir):
+        name = d.lower()
+        for seq in seq_dirs:
+            if seq in name and not seq_dirs[seq]:
+                seq_dirs[seq] = os.path.join(data_dir, d)
+    items = []
+    for pid in os.listdir(seq_dirs["en"]):
+        if pid not in labels:
+            continue
+        paths = {}
+        valid = True
+        for seq in ["en", "t1", "t2"]:
+            p = os.path.join(seq_dirs[seq], pid)
+            if not os.path.isdir(p):
+                valid = False; break
+            files = [f for f in os.listdir(p) if f.endswith(".nii.gz")]
+            paths[seq] = next((os.path.join(p,f) for f in files if not f.startswith("seg")), None)
+            if seq == "en":
+                paths["seg"] = next((os.path.join(p,f) for f in files if f.startswith("seg")), None)
+        if valid and all(paths.get(k) for k in ["en","t1","t2","seg"]):
+            items.append({"patient_id": pid, **paths})
+    print(f"Found {len(items)} patients")
+    return items
+
+def prepare_dict(item, labels):
+    return {"en_img": item["en"], "t1_img": item["t1"], "t2_img": item["t2"],
+            "en_lbl": item["seg"], "t1_lbl": item["seg"], "t2_lbl": item["seg"],
+            "label": labels[item["patient_id"]], "patient_id": item["patient_id"]}
+
+class SafeDataset(MonaiDataset):
+    def __getitem__(self, idx):
+        try: return super().__getitem__(idx)
+        except: return None
+
+def collate_fn(batch):
+    batch = [b for b in batch if b is not None]
+    return default_collate(batch) if batch else None
+## 4. Train & Evaluate Functions
+def train_one_epoch(model, loader, optimizer, criterion, scaler):
+    model.train()
+    total_loss, count = 0.0, 0
+    for batch in loader:
+        if batch is None: continue
+        imgs = torch.cat([batch["en_img"], batch["t1_img"], batch["t2_img"]], dim=1).to(device)
+        labels = batch["label"].to(device)
+        optimizer.zero_grad()
+        with torch.cuda.amp.autocast():
+            loss = criterion(model(imgs), labels)
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+        total_loss += loss.item() * imgs.size(0)
+        count += imgs.size(0)
+    return total_loss / count if count > 0 else 0
+
+@torch.no_grad()
+def evaluate(model, loader):
+    model.eval()
+    y_true, y_prob = [], []
+    for batch in loader:
+        if batch is None: continue
+        imgs = torch.cat([batch["en_img"], batch["t1_img"], batch["t2_img"]], dim=1).to(device)
+        probs = softmax(model(imgs), dim=1)[:, 1].cpu().tolist()
+        y_true.extend(batch["label"].tolist())
+        y_prob.extend(probs)
+    return np.array(y_true), np.array(y_prob)
+## 5. Run 5-Fold CV for All VOI Types
+labels = load_labels(LABEL_FILE)
+all_cv_results = {}
+
+for voi_name, data_dir in DATA_DIRS.items():
+    print(f"\n{'='*60}\n{voi_name}\n{'='*60}")
+    items = build_file_list(data_dir, labels)
+    pids = [it["patient_id"] for it in items]
+    y = [labels[pid] for pid in pids]
+
+    skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=SEED)
+    fold_results = []
+
+    for fold, (train_idx, val_idx) in enumerate(skf.split(pids, y), 1):
+        print(f"  Fold {fold}/{N_FOLDS}")
+        train_items = [items[i] for i in train_idx]
+        val_items = [items[i] for i in val_idx]
+
+        train_ds = SafeDataset([prepare_dict(it, labels) for it in train_items], get_transforms(True))
+        val_ds = SafeDataset([prepare_dict(it, labels) for it in val_items], get_transforms(False))
+        train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=8,
+                                  pin_memory=True, collate_fn=collate_fn, drop_last=True)
+        val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=8,
+                                pin_memory=True, collate_fn=collate_fn)
+
+        model = DenseNet121(spatial_dims=3, in_channels=3, out_channels=2).to(device)
+        if torch.cuda.device_count() > 1:
+            model = nn.DataParallel(model)
+
+        counts = np.bincount([labels[it["patient_id"]] for it in train_items])
+        weights = torch.FloatTensor(len(train_items) / (len(counts) * counts)).to(device)
+        criterion = nn.CrossEntropyLoss(weight=weights)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-5)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
+        scaler = torch.cuda.amp.GradScaler()
+
+        for epoch in range(1, EPOCHS + 1):
+            loss = train_one_epoch(model, train_loader, optimizer, criterion, scaler)
+            scheduler.step()
+
+        y_true, y_prob = evaluate(model, val_loader)
+        auc = roc_auc_score(y_true, y_prob)
+        print(f"    AUC: {auc:.4f}")
+        fold_results.append({"fold": fold, "y_true": y_true.tolist(), "y_prob": y_prob.tolist(), "auc": auc})
+
+        # Save checkpoint
+        os.makedirs(f"{OUTPUT_DIR}/{voi_name}", exist_ok=True)
+        state = model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict()
+        torch.save(state, f"{OUTPUT_DIR}/{voi_name}/fold{fold}.pth")
+
+        del model, train_loader, val_loader
+        gc.collect(); torch.cuda.empty_cache()
+
+    all_cv_results[voi_name] = fold_results
+    mean_auc = np.mean([f["auc"] for f in fold_results])
+    print(f"  Mean AUC: {mean_auc:.3f}")
+
+# Save results
+with open(f"{OUTPUT_DIR}/cv_results.json", "w") as f:
+    json.dump(all_cv_results, f, indent=2)
+print(f"\nResults saved to {OUTPUT_DIR}/cv_results.json")
+## 6. Train Final Models (All Data)
+for voi_name, data_dir in DATA_DIRS.items():
+    print(f"\nFinal model: {voi_name}")
+    items = build_file_list(data_dir, labels)
+    y = [labels[it["patient_id"]] for it in items]
+
+    ds = SafeDataset([prepare_dict(it, labels) for it in items], get_transforms(True))
+    loader = DataLoader(ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=8,
+                        pin_memory=True, collate_fn=collate_fn, drop_last=True)
+
+    model = DenseNet121(spatial_dims=3, in_channels=3, out_channels=2).to(device)
+    if torch.cuda.device_count() > 1:
+        model = nn.DataParallel(model)
+
+    counts = np.bincount(y)
+    weights = torch.FloatTensor(len(y) / (len(counts) * counts)).to(device)
+    criterion = nn.CrossEntropyLoss(weight=weights)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-5)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
+    scaler = torch.cuda.amp.GradScaler()
+
+    for epoch in range(1, EPOCHS + 1):
+        loss = train_one_epoch(model, loader, optimizer, criterion, scaler)
+        scheduler.step()
+        if epoch % 10 == 0:
+            print(f"  Epoch {epoch}: loss={loss:.4f}")
+
+    state = model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict()
+    torch.save(state, f"{OUTPUT_DIR}/{voi_name}/final.pth")1
+
+    # Determine threshold: sensitivity >= 80% with max specificity
+    # Pool all CV predictions
+    cv_folds = all_cv_results[voi_name]
+    all_yt = np.concatenate([np.array(f["y_true"]) for f in cv_folds])
+    all_yp = np.concatenate([np.array(f["y_prob"]) for f in cv_folds])
+    fpr, tpr, thresholds = roc_curve(all_yt, all_yp)
+    # Find threshold where sensitivity >= 0.80, maximizing specificity
+    candidates = [(t, tpr[i], 1-fpr[i]) for i, t in enumerate(thresholds) if tpr[i] >= 0.80]
+    best_thresh = max(candidates, key=lambda x: x[2])[0]
+    print(f"  Threshold (sens>=80%%): {best_thresh:.6f}")
+
+    del model, loader
+    gc.collect(); torch.cuda.empty_cache()
+
+print("\nDone.")
+## 7. ROC Curves (Internal Validation)
+plt.rcParams.update({"font.family": "sans-serif", "font.sans-serif": ["Arial"], "font.size": 11})
+colors = {"R-VOI": "#E53935", "S-VOI": "#43A047", "E-VOI": "#1E88E5"}
+mean_fpr = np.linspace(0, 1, 500)
+
+fig, ax = plt.subplots(figsize=(7, 6.5), dpi=400)
+ax.set_facecolor("white")
+
+for voi_name in ["R-VOI", "S-VOI", "E-VOI"]:
+    folds = all_cv_results[voi_name]
+    fold_tprs = []
+    for f in folds:
+        fpr_f, tpr_f, _ = roc_curve(f["y_true"], f["y_prob"])
+        interp = np.interp(mean_fpr, fpr_f, tpr_f); interp[0] = 0.0
+        fold_tprs.append(interp)
+    fold_tprs = np.array(fold_tprs)
+    mean_tpr = fold_tprs.mean(axis=0); mean_tpr[-1] = 1.0
+    std_tpr = fold_tprs.std(axis=0)
+    mean_auc = np.mean([f["auc"] for f in folds])
+
+    # Bootstrap CI for AUC
+    all_yt = np.concatenate([np.array(f["y_true"]) for f in folds])
+    all_yp = np.concatenate([np.array(f["y_prob"]) for f in folds])
+    boot_aucs = []
+    for _ in range(2000):
+        idx = np.random.choice(len(all_yt), len(all_yt), replace=True)
+        if len(np.unique(all_yt[idx])) < 2: continue
+        boot_aucs.append(roc_auc_score(all_yt[idx], all_yp[idx]))
+    boot_aucs.sort()
+    ci_lo, ci_hi = boot_aucs[int(0.025*len(boot_aucs))], boot_aucs[int(0.975*len(boot_aucs))]
+
+    ax.fill_between(mean_fpr, np.maximum(mean_tpr-std_tpr, 0), np.minimum(mean_tpr+std_tpr, 1),
+                    color=colors[voi_name], alpha=0.12)
+    lw = 2.2 if voi_name == "E-VOI" else 2.0
+    ax.plot(mean_fpr, mean_tpr, color=colors[voi_name], lw=lw,
+            label=f"{voi_name}: Average AUC={mean_auc:.3f} (95% CI: {ci_lo:.3f}\u2013{ci_hi:.3f})")
+
+ax.plot([0,1],[0,1],"--",color="#AAAAAA",lw=1.0,alpha=0.6,label="Chance (AUC=0.500)")
+ax.set(xlim=[-0.02,1.02], ylim=[-0.02,1.02])
+ax.set_xlabel("False Positive Rate (1 - Specificity)", fontsize=12, fontweight="bold")
+ax.set_ylabel("True Positive Rate (Sensitivity)", fontsize=12, fontweight="bold")
+ax.set_title("Internal Validation", fontsize=14, fontweight="bold")
+ax.set_aspect("equal"); ax.grid(True, alpha=0.15)
+ax.legend(loc="lower right", fontsize=8.5)
+ax.text(0.02, 0.97, "(a)", transform=ax.transAxes, fontsize=16, fontweight="bold", va="top")
+plt.tight_layout()
+plt.savefig(f"{OUTPUT_DIR}/Fig3a_Internal_ROC.png", dpi=400, bbox_inches="tight")
+plt.savefig(f"{OUTPUT_DIR}/Fig3a_Internal_ROC.tiff", dpi=400, bbox_inches="tight")
+plt.show()
