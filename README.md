@@ -1,77 +1,124 @@
-# DL-STT-VOI-Expansion
+# DL-STT-VOI-Extension
 
-Deep learning-based classification of soft tissue tumors on MRI: evaluating the impact of peritumoral VOI expansion.
+Code for **"Influence of Volume-of-Interest Extension on Deep Learning-based Classification of Soft Tissue Tumors on MRI."**
 
-## Overview
-
-This project develops and validates DenseNet-121 models for differentiating benign and malignant soft tissue tumors using three voxel-of-interest (VOI) strategies on multi-sequence MRI (T1WI, T2WI, contrast-enhanced T1WI):
+DenseNet-121 models classify soft tissue tumors as non-malignant or malignant on multi-sequence MRI (T1WI, T2WI, and contrast-enhanced T1WI). Three volume-of-interest (VOI) strategies are compared to evaluate the effect of including the peritumoral region.
 
 | VOI | Description |
 |-----|-------------|
-| **R-VOI** | Rectangular bounding box tightly enclosing the tumor |
-| **S-VOI** | Standard tumor segmentation along tumor margins |
-| **E-VOI** | Expanded VOI with 1 cm peritumoral extension |
+| **R-VOI** | Rectangular VOI: the smallest rectangular box enclosing the tumor |
+| **S-VOI** | Standard VOI: the tumor segmentation without any margin |
+| **E-VOI** | Extended VOI: the tumor segmentation extended by 1 cm into the peritumoral tissue |
 
-## Key Parameters
+## Repository structure
+
+```
+code/
+├── preprocessing.py         # preprocessing transforms and data loading (shared)
+├── internal_validation.py   # 5-fold cross-validation, final models, cutoffs, ROC curves
+└── external_validation.py   # inference on the external test set, statistics, ROC curves
+```
+
+## Preprocessing
+
+The same steps are applied to all three VOI models (`code/preprocessing.py`).
+
+1. Load the three sequences and the VOI mask.
+2. Resample the whole image volume to 1 × 1 × 2 mm.
+3. Resize the whole image volume to 128 × 128 × 80 voxels.
+4. Apply the VOI mask (voxels outside the VOI are set to 0). The images are not cropped to the VOI.
+5. Normalize intensities within the VOI: f(x) = (x − μ) / σ × 1000.
+6. Training only: random flipping, affine transformation, Gaussian noise, bias field, and elastic deformation.
+
+## Data
+
+Patient data are not included in this repository. The VOI masks (R-VOI, S-VOI, and E-VOI) are prepared in advance; mask generation is not part of this repository.
+
+```
+data/
+├── train/                         # training set
+│   ├── labels.csv                 # patient_id, label
+│   ├── R-VOI/
+│   │   ├── EN/<patient_id>/       # contrast-enhanced T1WI: image.nii.gz, seg_label.nii.gz (VOI mask)
+│   │   ├── T1/<patient_id>/       # T1WI: image.nii.gz
+│   │   └── T2/<patient_id>/       # T2WI: image.nii.gz
+│   ├── S-VOI/                     # same layout, S-VOI mask
+│   └── E-VOI/                     # same layout, E-VOI mask
+└── external/                      # external test set
+    ├── labels.csv
+    ├── readers.csv                # patient_id, Reader1, Reader2 (5-point score, 0–4)
+    ├── R-VOI/ ...
+    ├── S-VOI/ ...
+    └── E-VOI/ ...
+```
+
+- `labels.csv`: `label` is 0 for non-malignant (benign or intermediate) and 1 for malignant tumors.
+- The VOI mask file name starts with `seg` and is placed in the `EN` folder of each patient.
+
+## Usage
+
+```bash
+pip install torch monai nibabel scikit-learn scipy pandas matplotlib
+
+# 1. (optional) check the preprocessing of one VOI directory
+python code/preprocessing.py --data_dir ./data/train/S-VOI --labels ./data/train/labels.csv
+
+# 2. internal validation: 5-fold cross-validation, final models, and cutoffs
+python code/internal_validation.py --data_root ./data/train \
+    --labels ./data/train/labels.csv --output_dir ./outputs
+
+# 3. external validation with the final models and the predetermined cutoffs
+python code/external_validation.py --data_root ./data/external \
+    --labels ./data/external/labels.csv --readers ./data/external/readers.csv \
+    --model_dir ./outputs --output_dir ./outputs/external
+```
+
+Run the scripts from the repository root, or from `code/` with the paths adjusted.
+
+## Model and training
 
 | Parameter | Value |
 |-----------|-------|
-| Architecture | DenseNet-121 (MONAI) |
-| Input | 3-channel (T1WI + T2WI + CE-T1WI), 128×128×80 voxels |
-| Voxel spacing | 1×1×2 mm³ |
-| Optimizer | AdamW (weight_decay=1e-5) |
-| Learning rate | 5×10⁻⁵ |
-| Scheduler | CosineAnnealingWarmRestarts (T₀=10, T_mult=2) |
+| Architecture | DenseNet-121, 3D (MONAI) |
+| Input | 3 channels (contrast-enhanced T1WI, T1WI, T2WI), 128 × 128 × 80 voxels |
+| Voxel spacing | 1 × 1 × 2 mm |
+| Optimizer | AdamW (weight decay 1e-5) |
+| Learning rate | 5 × 10⁻⁵ |
+| Scheduler | Cosine annealing with warm restarts (T₀ = 10, T_mult = 2) |
 | Batch size | 32 |
 | Epochs | 30 |
-| Loss | Cross-entropy with inverse class-frequency weights |
+| Loss | Cross-entropy with class weights inversely proportional to class frequency |
 | Mixed precision | Enabled |
-| Normalization | f(x) = (x − μ) / σ × 1000 (nonzero voxels) |
+| Random seed | 42 |
 
-## Notebooks
+## Internal validation (`internal_validation.py`)
 
-| File | Description |
-|------|-------------|
-| `01_internal_validation.ipynb` | 5-fold CV training, threshold determination, ROC curves |
-| `02_external_validation.ipynb` | External cohort evaluation, DeLong tests, ROC curves |
+- Stratified 5-fold cross-validation at the patient level.
+- AUC of each fold and mean AUC; 95% CI by bootstrapping (2,000 resamples).
+- Sensitivity and specificity at the Youden-optimal cutoff of each validation fold.
+- Paired t-tests of the fold AUCs between models.
+- Final models are trained on the entire training set.
+- One cutoff per model is determined from the pooled out-of-fold predictions of the training set (sensitivity ≥ 80% with maximum specificity) and saved to `thresholds.json`.
 
-### Internal validation (`01`)
-- Stratified 5-fold cross-validation
-- Trains all three VOI models and saves checkpoints
-- Trains final models on full training data
-- Determines classification threshold per model (sensitivity ≥ 80%, maximum specificity)
-- Generates ROC curves with ±1 SD shading
+Outputs: `cv_results.json`, `<VOI>/fold*.pth`, `<VOI>/final.pth`, `thresholds.json`, `internal_performance.csv`, `internal_auc_comparison.csv`, `Fig3a_Internal_ROC.png/.tiff`.
 
-### External validation (`02`)
-- Loads prediction results (CSV) and applies predetermined thresholds
-- AUC with DeLong 95% CI
-- Sensitivity and specificity with exact binomial (Clopper-Pearson) 95% CI
-- Pairwise DeLong tests (models vs. models, models vs. readers, reader vs. reader)
-- Generates ROC curves with AUC and 95% CI
+Cutoffs used in the study: R-VOI 0.3452, S-VOI 0.3749, E-VOI 0.3771.
 
-## Data Structure
+## External validation (`external_validation.py`)
 
-```
-data_dir/
-├── EN/                    # Contrast-enhanced T1WI
-│   └── patient_id/
-│       ├── image.nii.gz
-│       └── seg_label.nii.gz
-├── T1/                    # T1WI
-│   └── patient_id/
-│       └── image.nii.gz
-└── T2/                    # T2WI
-    └── patient_id/
-        └── image.nii.gz
-```
+- The final models are applied to the external test set with the same preprocessing as in training (no augmentation).
+- The cutoffs predetermined from the training set are applied without modification; a score of ≥ 3 is used for the radiologists.
+- AUC with DeLong 95% CI; sensitivity and specificity with exact binomial (Clopper–Pearson) 95% CI.
+- Pairwise DeLong tests (models vs. models, models vs. readers, reader vs. reader).
 
-**labels.csv**: `patient_id, label` (0 = benign, 1 = malignant)
+Outputs: `external_predictions.csv`, `external_performance.csv`, `external_delong_tests.csv`, `Fig3b_External_ROC.png/.tiff`.
 
 ## Requirements
 
 ```
 torch >= 1.12
 monai >= 1.0
+nibabel
 scikit-learn
 scipy
 pandas
