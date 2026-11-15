@@ -1,19 +1,23 @@
 """Preprocessing and data loading shared by internal and external validation.
 
 Pipeline applied to every case (identical for the R-VOI, S-VOI, and E-VOI models):
-  1. Load the three MRI sequences (contrast-enhanced T1WI, T1WI, T2WI) and the VOI mask.
+  1. Load the three MRI sequences (contrast-enhanced T1WI, T1WI, T2WI) and the VOI mask
+     of each sequence (the tumor is segmented on each sequence separately).
   2. Resample the whole image volume to 1 x 1 x 2 mm.
   3. Resize the whole image volume to 128 x 128 x 80 voxels.
-  4. Apply the VOI mask (voxels outside the VOI are set to 0). Images are not cropped to the VOI.
+  4. Apply the VOI mask of each sequence to that sequence (voxels outside the VOI are
+     set to 0). Images are not cropped to the VOI.
   5. Normalize intensities within the VOI: f(x) = (x - mean) / SD x 1000.
   6. Training only: random flipping, affine transformation, Gaussian noise,
      bias field, and elastic deformation.
 
 Expected data layout (one directory per VOI type; see README.md):
     <voi_dir>/EN/<patient_id>/<image>.nii.gz   contrast-enhanced T1WI
-    <voi_dir>/EN/<patient_id>/seg*.nii.gz      VOI mask of this VOI type
+    <voi_dir>/EN/<patient_id>/seg*.nii.gz      VOI mask on contrast-enhanced T1WI
     <voi_dir>/T1/<patient_id>/<image>.nii.gz   T1WI
+    <voi_dir>/T1/<patient_id>/seg*.nii.gz      VOI mask on T1WI
     <voi_dir>/T2/<patient_id>/<image>.nii.gz   T2WI
+    <voi_dir>/T2/<patient_id>/seg*.nii.gz      VOI mask on T2WI
 
 Quick check of one VOI directory:
     python preprocessing.py --data_dir ./data/train/S-VOI --labels ./data/train/labels.csv
@@ -72,7 +76,9 @@ def get_transforms(train=True):
         EnsureChannelFirstd(keys=ALL_KEYS),
         Spacingd(keys=ALL_KEYS, pixdim=SPACING, mode=["bilinear"]*3 + ["nearest"]*3),
         Resized(keys=ALL_KEYS, spatial_size=ROI_SIZE, mode=["trilinear"]*3 + ["nearest"]*3),
-        MaskIntensityd(keys=IMG_KEYS, mask_key="en_lbl"),
+        MaskIntensityd(keys="en_img", mask_key="en_lbl"),   # each sequence is masked with its own VOI
+        MaskIntensityd(keys="t1_img", mask_key="t1_lbl"),
+        MaskIntensityd(keys="t2_img", mask_key="t2_lbl"),
         IntensityNormalization(keys=IMG_KEYS),
     ]
     if train:
@@ -98,7 +104,7 @@ def load_labels(path):
 
 
 def build_file_list(data_dir, labels):
-    """Collect patients that have all three sequences and the VOI mask."""
+    """Collect patients that have all three sequences and the VOI mask of each sequence."""
     seq_dirs = {"en": None, "t1": None, "t2": None}
     for d in os.listdir(data_dir):
         name = d.lower()
@@ -117,9 +123,8 @@ def build_file_list(data_dir, labels):
                 valid = False; break
             files = [f for f in os.listdir(p) if f.endswith(".nii.gz")]
             paths[seq] = next((os.path.join(p, f) for f in files if not f.startswith("seg")), None)
-            if seq == "en":
-                paths["seg"] = next((os.path.join(p, f) for f in files if f.startswith("seg")), None)
-        if valid and all(paths.get(k) for k in ["en", "t1", "t2", "seg"]):
+            paths[f"{seq}_seg"] = next((os.path.join(p, f) for f in files if f.startswith("seg")), None)
+        if valid and all(paths.get(k) for k in ["en", "t1", "t2", "en_seg", "t1_seg", "t2_seg"]):
             items.append({"patient_id": pid, **paths})
     print(f"Found {len(items)} patients")
     return items
@@ -127,7 +132,7 @@ def build_file_list(data_dir, labels):
 
 def prepare_dict(item, labels):
     return {"en_img": item["en"], "t1_img": item["t1"], "t2_img": item["t2"],
-            "en_lbl": item["seg"], "t1_lbl": item["seg"], "t2_lbl": item["seg"],
+            "en_lbl": item["en_seg"], "t1_lbl": item["t1_seg"], "t2_lbl": item["t2_seg"],
             "label": labels[item["patient_id"]], "patient_id": item["patient_id"]}
 
 
