@@ -14,10 +14,18 @@ DenseNet-121 models classify soft tissue tumors as non-malignant or malignant on
 
 ```
 code/
+├── make_voi_masks.py        # R-VOI and E-VOI masks from the tumor segmentation
 ├── preprocessing.py         # preprocessing transforms and data loading (shared)
 ├── internal_validation.py   # 5-fold cross-validation, final models, cutoffs, ROC curves
 └── external_validation.py   # inference on the external test set, statistics, ROC curves
 ```
+
+## VOI masks
+
+`code/make_voi_masks.py` generates the R-VOI and E-VOI masks from the tumor segmentation (S-VOI).
+
+- **R-VOI**: the smallest rectangular box enclosing the tumor segmentation, aligned with the image axes.
+- **E-VOI**: the tumor segmentation extended by 1 cm. The extension is performed within each axial slice, so the E-VOI covers the same slices as the segmentation.
 
 ## Preprocessing
 
@@ -28,11 +36,11 @@ The same steps are applied to all three VOI models (`code/preprocessing.py`).
 3. Resize the whole image volume to 128 × 128 × 80 voxels.
 4. Apply the VOI mask (voxels outside the VOI are set to 0). The images are not cropped to the VOI.
 5. Normalize intensities within the VOI: f(x) = (x − μ) / σ × 1000.
-6. Training only: random flipping, affine transformation, Gaussian noise, bias field, and elastic deformation.
+6. Training only: augmentation applied on the fly each time a case is loaded (random flipping, affine transformation, Gaussian noise, bias field, and elastic deformation). No augmentation is used for the validation folds or the external test set.
 
 ## Data
 
-Patient data are not included in this repository. The VOI masks (R-VOI, S-VOI, and E-VOI) are prepared in advance; mask generation is not part of this repository.
+Patient data are not included in this repository. The S-VOI directory (images and tumor segmentation) is prepared first; the R-VOI and E-VOI directories are created from it with `make_voi_masks.py`.
 
 ```
 data/
@@ -60,14 +68,18 @@ data/
 ```bash
 pip install torch monai nibabel scikit-learn scipy pandas matplotlib
 
-# 1. (optional) check the preprocessing of one VOI directory
-python code/preprocessing.py --data_dir ./data/train/S-VOI --labels ./data/train/labels.csv
+# 1. generate the R-VOI and E-VOI masks from the tumor segmentation (S-VOI)
+python code/make_voi_masks.py --src ./data/train/S-VOI --dst_root ./data/train
+python code/make_voi_masks.py --src ./data/external/S-VOI --dst_root ./data/external
 
-# 2. internal validation: 5-fold cross-validation, final models, and cutoffs
+# 2. (optional) check the preprocessing of one VOI directory
+python code/preprocessing.py --data_dir ./data/train/E-VOI --labels ./data/train/labels.csv
+
+# 3. internal validation: 5-fold cross-validation, final models, and cutoffs
 python code/internal_validation.py --data_root ./data/train \
     --labels ./data/train/labels.csv --output_dir ./outputs
 
-# 3. external validation with the final models and the predetermined cutoffs
+# 4. external validation with the final models and the predetermined cutoffs
 python code/external_validation.py --data_root ./data/external \
     --labels ./data/external/labels.csv --readers ./data/external/readers.csv \
     --model_dir ./outputs --output_dir ./outputs/external
